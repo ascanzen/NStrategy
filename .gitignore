@@ -22,3 +22,6 @@ dist/
 
 /zigzag_*.png
 /outputs/*
+!/outputs/zigzag_csi300_nav.csv
+!/outputs/zigzag_csi300_summary.json
+!/outputs/zigzag_csi300_nav.svg

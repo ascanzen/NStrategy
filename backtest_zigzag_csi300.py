@@ -9,10 +9,10 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
 
 try:
     from thiszigzag import peak_valley_pivots as compiled_peak_valley_pivots
@@ -36,6 +36,8 @@ class BacktestConfig:
     threshold: float
     benchmark: str
     output_dir: Path
+    liquidity_filter_pct: float
+    amount_field: str
 
 
 def identify_initial_pivot(values: np.ndarray, up_thresh: float, down_thresh: float) -> int:
@@ -247,17 +249,72 @@ def build_active_sets(
 
 
 def load_stock_data(
-    qlib_dir: Path, symbols: list[str], calendar_len: int
+    qlib_dir: Path, symbols: list[str], calendar_len: int, extra_fields: list[str] | None = None
 ) -> dict[str, dict[str, np.ndarray]]:
     data: dict[str, dict[str, np.ndarray]] = {}
+    extra_fields = extra_fields or []
     for symbol in symbols:
         close = read_feature(qlib_dir, symbol, "close", calendar_len)
         high = read_feature(qlib_dir, symbol, "high", calendar_len)
         low = read_feature(qlib_dir, symbol, "low", calendar_len)
         if close is None or high is None or low is None:
             continue
-        data[symbol] = {"close": close, "high": high, "low": low}
+        series = {"close": close, "high": high, "low": low}
+        missing_extra = False
+        for field in extra_fields:
+            values = read_feature(qlib_dir, symbol, field, calendar_len)
+            if values is None:
+                missing_extra = True
+                break
+            series[field] = values
+        if missing_extra:
+            continue
+        data[symbol] = series
     return data
+
+
+def build_liquidity_filtered_sets(
+    active_sets: list[set[str]],
+    stocks: dict[str, dict[str, np.ndarray]],
+    start_idx: int,
+    amount_field: str,
+    top_pct: float,
+) -> tuple[list[set[str]], np.ndarray]:
+    """Filter each day's universe by daily amount ranking.
+
+    Rank rule:
+    - Higher amount is better.
+    - Keep the top `top_pct` symbols for that trading day.
+    """
+    if not 0 < top_pct <= 1:
+        raise ValueError("liquidity_filter_pct must be in (0, 1]")
+    if top_pct >= 1:
+        return [set(symbols) for symbols in active_sets], np.array([len(s) for s in active_sets], dtype=np.int32)
+
+    filtered_sets: list[set[str]] = []
+    tradable_counts = np.zeros(len(active_sets), dtype=np.int32)
+    for local_i, active in enumerate(active_sets):
+        global_i = start_idx + local_i
+        rows: list[tuple[str, float]] = []
+        for symbol in active:
+            series = stocks.get(symbol)
+            if series is None:
+                continue
+            amount = series[amount_field][global_i]
+            if np.isfinite(amount) and amount > 0:
+                rows.append((symbol, float(amount)))
+
+        if not rows:
+            filtered_sets.append(set())
+            continue
+
+        keep_n = max(1, int(np.ceil(len(rows) * top_pct)))
+        selected = sorted(rows, key=lambda row: (-row[1], row[0]))[:keep_n]
+        selected_set = {symbol for symbol, _ in selected}
+        filtered_sets.append(selected_set)
+        tradable_counts[local_i] = len(selected_set)
+
+    return filtered_sets, tradable_counts
 
 
 def max_drawdown(nav: np.ndarray) -> float:
@@ -296,11 +353,19 @@ def run_backtest(config: BacktestConfig) -> tuple[pd.DataFrame, dict[str, float 
     memberships = read_memberships(config.instruments)
     memberships = memberships[(memberships["end"] >= start) & (memberships["start"] <= end)]
     symbols = sorted(memberships["symbol"].unique())
-    stocks = load_stock_data(config.qlib_dir, symbols, len(calendar))
+    extra_fields = [config.amount_field]
+    stocks = load_stock_data(config.qlib_dir, symbols, len(calendar), extra_fields=extra_fields)
     symbols = sorted(stocks)
     memberships = memberships[memberships["symbol"].isin(symbols)]
 
     active_sets = build_active_sets(memberships, calendar, start_idx, end_idx)
+    tradable_sets, tradable_counts = build_liquidity_filtered_sets(
+        active_sets,
+        stocks,
+        start_idx,
+        config.amount_field,
+        config.liquidity_filter_pct,
+    )
     benchmark_close = read_feature(config.qlib_dir, config.benchmark, "close", len(calendar))
     if benchmark_close is None:
         raise ValueError(f"Benchmark {config.benchmark} close data was not found")
@@ -316,7 +381,7 @@ def run_backtest(config: BacktestConfig) -> tuple[pd.DataFrame, dict[str, float 
     holdings: set[str] = set()
 
     for local_i, global_i in enumerate(range(start_idx, end_idx)):
-        active_today = active_sets[local_i]
+        active_today = tradable_sets[local_i]
         active_next = active_sets[local_i + 1]
 
         dropped = holdings - active_today
@@ -358,7 +423,7 @@ def run_backtest(config: BacktestConfig) -> tuple[pd.DataFrame, dict[str, float 
         strategy_returns[local_i + 1] = day_return
         nav[local_i + 1] = nav[local_i] * (1 + day_return)
 
-    held_counts[-1] = len(holdings & active_sets[-1])
+    held_counts[-1] = len(holdings & tradable_sets[-1])
     bench = benchmark_close[start_idx : end_idx + 1].astype(np.float64)
     first_valid = np.flatnonzero(np.isfinite(bench) & (bench > 0))
     if len(first_valid) == 0:
@@ -377,6 +442,7 @@ def run_backtest(config: BacktestConfig) -> tuple[pd.DataFrame, dict[str, float 
             "csi300_return": benchmark_returns,
             "held_count": held_counts,
             "active_csi300_count": active_counts,
+            "tradable_count": tradable_counts,
         }
     )
 
@@ -392,6 +458,9 @@ def run_backtest(config: BacktestConfig) -> tuple[pd.DataFrame, dict[str, float 
         "loaded_symbols": int(len(stocks)),
         "threshold": float(config.threshold),
         "window": int(config.window),
+        "liquidity_filter_pct": float(config.liquidity_filter_pct),
+        "amount_field": config.amount_field,
+        "liquidity_filter_rule": "amount_desc_top_pct",
         "strategy_final_nav": float(nav[-1]),
         "csi300_final_nav": float(benchmark_nav[-1]),
         "strategy_total_return": float(nav[-1] - 1),
@@ -410,28 +479,14 @@ def run_backtest(config: BacktestConfig) -> tuple[pd.DataFrame, dict[str, float 
         else 0.0,
         "average_held_count": float(np.mean(held_counts)),
         "max_held_count": int(np.max(held_counts)),
+        "average_tradable_count": float(np.mean(tradable_counts)),
+        "max_tradable_count": int(np.max(tradable_counts)),
         "buy_signals": int(buy_signals),
         "sell_signals": int(sell_signals),
-        "forced_membership_exits": int(forced_exits),
-        "assumption": "Long-only, equal-weight CSI300 constituents. Positive N buys/holds; reverse N sells. Signals use same-day OHLC and earn next-day close-to-close returns. No fees/slippage.",
+        "forced_universe_exits": int(forced_exits),
+        "assumption": "Long-only, equal-weight CSI300 constituents after daily amount filtering. Each day keeps the top liquidity_filter_pct symbols by amount_field descending. Positive N buys/holds; reverse N sells. Signals use same-day OHLC and earn next-day close-to-close returns. No fees/slippage.",
     }
     return result, summary
-
-
-def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
-    ]
-    for candidate in candidates:
-        if Path(candidate).exists():
-            try:
-                return ImageFont.truetype(candidate, size=size)
-            except OSError:
-                pass
-    return ImageFont.load_default()
 
 
 def nice_ticks(vmin: float, vmax: float, count: int = 6) -> list[float]:
@@ -451,19 +506,15 @@ def nice_ticks(vmin: float, vmax: float, count: int = 6) -> list[float]:
     return ticks
 
 
+def svg_points(points: list[tuple[float, float]]) -> str:
+    return " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+
+
 def draw_nav_chart(df: pd.DataFrame, summary: dict[str, float | int | str], output_path: Path) -> None:
     width, height = 1600, 900
     margin_left, margin_right, margin_top, margin_bottom = 110, 70, 125, 120
     plot_w = width - margin_left - margin_right
     plot_h = height - margin_top - margin_bottom
-    image = Image.new("RGB", (width, height), "#fbfbf8")
-    draw = ImageDraw.Draw(image)
-
-    title_font = load_font(34)
-    subtitle_font = load_font(20)
-    axis_font = load_font(18)
-    small_font = load_font(16)
-    legend_font = load_font(20)
 
     dates = pd.to_datetime(df["date"])
     x_values = np.arange(len(df), dtype=np.float64)
@@ -481,24 +532,37 @@ def draw_nav_chart(df: pd.DataFrame, summary: dict[str, float | int | str], outp
     def map_y(y: float) -> float:
         return margin_top + (y_max - y) / (y_max - y_min) * plot_h
 
-    draw.text((margin_left, 38), "ZigZag N Strategy vs CSI300", fill="#1f2933", font=title_font)
+    title = "ZigZag N Strategy vs CSI300"
     subtitle = (
         f"{summary['start']} to {summary['end']} | "
-        f"Positive N hold, reverse N sell | Equal-weight CSI300 constituents"
+        f"Positive N hold, reverse N sell | "
+        f"Top {summary['liquidity_filter_pct']:.0%} by {summary['amount_field']}"
     )
-    draw.text((margin_left, 84), subtitle, fill="#52616b", font=subtitle_font)
+    footnote = (
+        f"No fees/slippage. Avg holdings: {summary['average_held_count']:.1f}; "
+        f"Max drawdown: strategy {summary['strategy_max_drawdown']:.1%}, CSI300 {summary['csi300_max_drawdown']:.1%}."
+    )
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
+        f'<title id="title">{escape(title)}</title>',
+        f'<desc id="desc">{escape(subtitle)}</desc>',
+        "<style>",
+        "text{font-family:Arial,Helvetica,sans-serif}.title{font-size:34px;font-weight:600;fill:#1f2933}.subtitle{font-size:20px;fill:#52616b}.axis-label{font-size:18px;fill:#52616b}.small{font-size:16px;fill:#52616b}.legend{font-size:20px;fill:#1f2933}.grid{stroke:#e2e5e8;stroke-width:1}.axis{stroke:#2f3a45;stroke-width:2}.series{fill:none;stroke-linejoin:round;stroke-linecap:round}",
+        "</style>",
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#fbfbf8"/>',
+        f'<text class="title" x="{margin_left}" y="73">{escape(title)}</text>',
+        f'<text class="subtitle" x="{margin_left}" y="106">{escape(subtitle)}</text>',
+    ]
 
-    axis_color = "#2f3a45"
-    grid_color = "#e2e5e8"
     for tick in y_ticks:
         y = map_y(tick)
-        draw.line((margin_left, y, margin_left + plot_w, y), fill=grid_color, width=1)
         label = f"{tick:.1f}x" if tick >= 1 else f"{tick:.2f}x"
-        bbox = draw.textbbox((0, 0), label, font=axis_font)
-        draw.text((margin_left - 15 - (bbox[2] - bbox[0]), y - 10), label, fill="#52616b", font=axis_font)
+        lines.append(f'<line class="grid" x1="{margin_left}" y1="{y:.2f}" x2="{margin_left + plot_w}" y2="{y:.2f}"/>')
+        lines.append(f'<text class="axis-label" x="{margin_left - 15}" y="{y + 6:.2f}" text-anchor="end">{escape(label)}</text>')
 
-    draw.line((margin_left, margin_top, margin_left, margin_top + plot_h), fill=axis_color, width=2)
-    draw.line((margin_left, margin_top + plot_h, margin_left + plot_w, margin_top + plot_h), fill=axis_color, width=2)
+    lines.append(f'<line class="axis" x1="{margin_left}" y1="{margin_top}" x2="{margin_left}" y2="{margin_top + plot_h}"/>')
+    lines.append(f'<line class="axis" x1="{margin_left}" y1="{margin_top + plot_h}" x2="{margin_left + plot_w}" y2="{margin_top + plot_h}"/>')
 
     year_starts = []
     seen_years = set()
@@ -510,33 +574,34 @@ def draw_nav_chart(df: pd.DataFrame, summary: dict[str, float | int | str], outp
         year_starts = [item for idx, item in enumerate(year_starts) if idx % 2 == 0]
     for i, year in year_starts:
         x = map_x(i)
-        draw.line((x, margin_top, x, margin_top + plot_h), fill="#eef0f2", width=1)
-        label = str(year)
-        bbox = draw.textbbox((0, 0), label, font=axis_font)
-        draw.text((x - (bbox[2] - bbox[0]) / 2, margin_top + plot_h + 16), label, fill="#52616b", font=axis_font)
+        lines.append(f'<line x1="{x:.2f}" y1="{margin_top}" x2="{x:.2f}" y2="{margin_top + plot_h}" stroke="#eef0f2" stroke-width="1"/>')
+        lines.append(f'<text class="axis-label" x="{x:.2f}" y="{margin_top + plot_h + 36}" text-anchor="middle">{year}</text>')
 
-    def draw_line(series: np.ndarray, color: str, width_px: int) -> None:
+    def line_points(series: np.ndarray) -> list[tuple[float, float]]:
         points = [(map_x(x), map_y(y)) for x, y in zip(x_values, series) if np.isfinite(y)]
-        if len(points) >= 2:
-            draw.line(points, fill=color, width=width_px, joint="curve")
+        return points
 
-    draw_line(benchmark, "#b8871a", 4)
-    draw_line(strategy, "#1f6f8b", 5)
+    benchmark_points = line_points(benchmark)
+    strategy_points = line_points(strategy)
+    if len(benchmark_points) >= 2:
+        lines.append(f'<polyline class="series" points="{svg_points(benchmark_points)}" stroke="#b8871a" stroke-width="4"/>')
+    if len(strategy_points) >= 2:
+        lines.append(f'<polyline class="series" points="{svg_points(strategy_points)}" stroke="#1f6f8b" stroke-width="5"/>')
 
     legend_x = margin_left + plot_w - 430
     legend_y = 44
-    draw.rounded_rectangle((legend_x - 18, legend_y - 14, legend_x + 405, legend_y + 82), radius=8, fill="#ffffff", outline="#e1e5e8")
-    draw.line((legend_x, legend_y + 9, legend_x + 48, legend_y + 9), fill="#1f6f8b", width=5)
-    draw.text((legend_x + 62, legend_y - 4), f"Strategy  {strategy[-1]:.2f}x", fill="#1f2933", font=legend_font)
-    draw.line((legend_x, legend_y + 52, legend_x + 48, legend_y + 52), fill="#b8871a", width=4)
-    draw.text((legend_x + 62, legend_y + 39), f"CSI300  {benchmark[-1]:.2f}x", fill="#1f2933", font=legend_font)
-
-    footnote = (
-        f"No fees/slippage. Avg holdings: {summary['average_held_count']:.1f}; "
-        f"Max drawdown: strategy {summary['strategy_max_drawdown']:.1%}, CSI300 {summary['csi300_max_drawdown']:.1%}."
+    lines.extend(
+        [
+            f'<rect x="{legend_x - 18}" y="{legend_y - 14}" width="423" height="96" rx="8" fill="#ffffff" stroke="#e1e5e8"/>',
+            f'<line x1="{legend_x}" y1="{legend_y + 9}" x2="{legend_x + 48}" y2="{legend_y + 9}" stroke="#1f6f8b" stroke-width="5"/>',
+            f'<text class="legend" x="{legend_x + 62}" y="{legend_y + 15}">Strategy  {strategy[-1]:.2f}x</text>',
+            f'<line x1="{legend_x}" y1="{legend_y + 52}" x2="{legend_x + 48}" y2="{legend_y + 52}" stroke="#b8871a" stroke-width="4"/>',
+            f'<text class="legend" x="{legend_x + 62}" y="{legend_y + 58}">CSI300  {benchmark[-1]:.2f}x</text>',
+            f'<text class="small" x="{margin_left}" y="{height - 40}">{escape(footnote)}</text>',
+            "</svg>",
+        ]
     )
-    draw.text((margin_left, height - 58), footnote, fill="#52616b", font=small_font)
-    image.save(output_path)
+    output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def parse_args() -> BacktestConfig:
@@ -550,6 +615,13 @@ def parse_args() -> BacktestConfig:
     parser.add_argument("--threshold", type=float, default=0.001)
     parser.add_argument("--benchmark", default="sh000300")
     parser.add_argument("--output-dir", default="outputs")
+    parser.add_argument(
+        "--liquidity-filter-pct",
+        type=float,
+        default=0.1,
+        help="Daily tradable universe ratio after amount ranking. Use 1.0 to disable.",
+    )
+    parser.add_argument("--amount-field", default="amount", help="qlib field used for amount ranking.")
     args = parser.parse_args()
 
     qlib_dir = Path(args.qlib_dir).expanduser()
@@ -564,6 +636,8 @@ def parse_args() -> BacktestConfig:
         threshold=args.threshold,
         benchmark=args.benchmark.lower(),
         output_dir=Path(args.output_dir),
+        liquidity_filter_pct=args.liquidity_filter_pct,
+        amount_field=args.amount_field.lower(),
     )
 
 
@@ -574,7 +648,7 @@ def main() -> None:
 
     nav_path = config.output_dir / "zigzag_csi300_nav.csv"
     summary_path = config.output_dir / "zigzag_csi300_summary.json"
-    chart_path = config.output_dir / "zigzag_csi300_nav.png"
+    chart_path = config.output_dir / "zigzag_csi300_nav.svg"
 
     df.to_csv(nav_path, index=False)
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
