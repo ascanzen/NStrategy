@@ -21,3 +21,4 @@ dist/
 .ipynb_checkpoints/
 
 /zigzag_*.png
+/outputs/*
