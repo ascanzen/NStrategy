@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+temp/
+dist/
+logs/
+outputs/
+data/cache/
+data/raw/
+data/features/
+.git/
+.DS_Store

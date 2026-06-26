@@ -1,0 +1,21 @@
+services:
+  n-pattern-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seawealthy-n-pattern
+    restart: unless-stopped
+    environment:
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN}
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+    command:
+      - python
+      - get_most_cross_section_data.py
+      - --daemon
+      - --market
+      - all
+      - --interval-minutes
+      - "15"

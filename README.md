@@ -194,3 +194,32 @@ print(positive_today[["date", "symbol", "signal_name", "close"]].head())
 ```
 
 A fuller annotated example is available at `examples/load_zigzag_signals.py`.
+
+## N Pattern Service
+
+This repository now includes a containerized service for the market cross-section fetch + N-pattern refresh workflow.
+
+Outputs are written to `outputs/n_pattern/`:
+
+- `n_daily_signals.csv`: one row per stock per trading day, including `n_signal`, `n_signal_name`, and `n_is_reversal`.
+- `n_events.csv`: only rows where a fresh positive-N or reverse-N signal appears.
+- `n_latest_signals.csv`: the latest trading-day snapshot for downstream consumers.
+- `n_daily_index.json`: date-indexed positive-N / reverse-N symbol lists.
+- `n_summary.json`: run metadata, counts, and file locations.
+- `svg/<trade_date>/`: per-signal SVG charts.
+
+Local run:
+
+```bash
+export TUSHARE_TOKEN=your_token_here
+python3 get_most_cross_section_data.py --market all --n-window 60 --n-threshold 0.001
+```
+
+Daemon mode inside Docker:
+
+```bash
+export TUSHARE_TOKEN=your_token_here
+docker compose up -d --build
+```
+
+The service runs only during Shanghai trading sessions and refreshes every 15 minutes. Logs are written to `logs/cross_section_service.log` and also streamed to the container console.
