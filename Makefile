@@ -82,4 +82,4 @@ clean-outputs:
 
 run_zigzag_data:
 	export TUSHARE_TOKEN=a0bd867f85cdc83d655e2d793ad18cc11b77c49b57b62b17326405ad && \
-	$(PYTHON) get_most_cross_section_data.py
+	$(PYTHON) get_most_cross_section_data.py --market all --fast-reverse-today --fast-reverse-days 3

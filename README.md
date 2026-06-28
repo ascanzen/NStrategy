@@ -208,6 +208,18 @@ Outputs are written to `outputs/n_pattern/`:
 - `n_summary.json`: run metadata, counts, and file locations.
 - `svg/<trade_date>/`: per-signal SVG charts.
 
+Fast transition mode (only direction flips on latest trade day):
+
+- Condition: previous trade day is `positive_n` and latest is `reverse_n`, or previous is `reverse_n` and latest is `positive_n`.
+- Range: recent 3 trading days by default, can be adjusted by `--fast-reverse-days`.
+- Command: `python3 get_most_cross_section_data.py --market all --fast-reverse-today --fast-reverse-days 3`
+- Outputs:
+  - `n_transition_recent.csv` (primary)
+  - `n_transition_recent_summary.json` (primary)
+  - `n_reverse_today.csv` (legacy-compatible alias)
+  - `n_reverse_today_summary.json` (legacy-compatible alias)
+  - `svg/<trade_date>/` only for changed symbols in this mode
+
 Local run:
 
 ```bash

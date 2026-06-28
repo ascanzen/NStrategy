@@ -209,29 +209,69 @@ def n_pattern_signal_with_details(low_window: np.ndarray, high_window: np.ndarra
     """返回 `(signal, pivot_count)`，signal=1 正N，-1 反N，0 无新信号。"""
     pivots = peak_valley_pivots(low_window, high_window, threshold, -threshold)
     pivot_idx = np.nonzero(pivots)[0]
-    if len(pivot_idx) <= 3:
+    if len(pivot_idx) < 4:
         return 0, int(len(pivot_idx))
 
+    pivot_values = pivots[pivot_idx]
     idx0, idx1, idx2, idx3 = pivot_idx[-4:]
-    if idx3 != len(low_window) - 1:
-        return 0, int(len(pivot_idx))
-
-    if pivots[-1] == PEAK:
+    direction = 0
+    if pivot_values[-1] == 1:
         if high_window[idx3] > high_window[idx1] and low_window[idx2] > low_window[idx0]:
-            return 1, int(len(pivot_idx))
-    elif pivots[-1] == VALLEY:
+            direction = 1
+    elif pivot_values[-1] == -1:
         if low_window[idx3] < low_window[idx1] and high_window[idx2] < high_window[idx0]:
-            return -1, int(len(pivot_idx))
-    return 0, int(len(pivot_idx))
+            direction = -1
+    return int(direction), int(len(pivot_idx))
+
+
+def _n_transition_name(prev_signal: int, signal: int) -> str:
+    """返回 N 型方向切换名称，仅支持正N<->反N互切。"""
+    if prev_signal == 1 and signal == -1:
+        return "positive_to_reverse"
+    if prev_signal == -1 and signal == 1:
+        return "reverse_to_positive"
+    return "none"
 
 
 def _svg_points(points: list[tuple[float, float]]) -> str:
     return " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
 
 
-def _render_n_svg(window_df: pd.DataFrame, signal_name: str, threshold: float, output_path: Path) -> None:
+def _load_stock_name_map_from_akshare() -> dict[str, str]:
+    """从 akshare 原始文件读取 ts_code -> 中文名 映射。"""
+    if not AKSHARE_CSV.exists():
+        return {}
+
+    try:
+        ak_df = pd.read_csv(AKSHARE_CSV)
+    except Exception:
+        return {}
+
+    if "代码" not in ak_df.columns or "名称" not in ak_df.columns:
+        return {}
+
+    out: dict[str, str] = {}
+    for _, row in ak_df[["代码", "名称"]].dropna(subset=["代码"]).iterrows():
+        code = normalize_ts_code(row["代码"])
+        if not code:
+            continue
+        name_zh = str(row.get("名称", "")).strip()
+        if name_zh and name_zh.upper() != "NAN":
+            out[code] = name_zh
+    return out
+
+
+def _render_n_svg(
+    window_df: pd.DataFrame,
+    signal_name: str,
+    threshold: float,
+    output_path: Path,
+    stock_code: str,
+    stock_name_zh: str,
+) -> None:
     """把最近窗口的 N 型走势渲染成一个轻量 SVG 文件。"""
     data = window_df.reset_index(drop=True).copy()
+    open_ = pd.to_numeric(data["open"], errors="coerce").to_numpy(dtype=float)
     close = pd.to_numeric(data["close"], errors="coerce").to_numpy(dtype=float)
     high = pd.to_numeric(data["high"], errors="coerce").to_numpy(dtype=float)
     low = pd.to_numeric(data["low"], errors="coerce").to_numpy(dtype=float)
@@ -259,13 +299,37 @@ def _render_n_svg(window_df: pd.DataFrame, signal_name: str, threshold: float, o
     def y_at(price: float) -> float:
         return height - pad_y - (price - price_min) / (price_max - price_min) * (height - 2 * pad_y)
 
-    close_points = [(x_at(i), y_at(float(close[i]))) for i in range(len(close)) if np.isfinite(close[i])]
+    candle_width = max(3.0, x_step * 0.65)
+    half_w = candle_width / 2.0
+    candle_elements = []
+    for i in range(len(data)):
+        if not (np.isfinite(open_[i]) and np.isfinite(close[i]) and np.isfinite(high[i]) and np.isfinite(low[i])):
+            continue
+
+        x = x_at(i)
+        y_high = y_at(float(high[i]))
+        y_low = y_at(float(low[i]))
+        y_open = y_at(float(open_[i]))
+        y_close = y_at(float(close[i]))
+        is_up = close[i] >= open_[i]
+        color = "#ef4444" if is_up else "#10b981"
+        body_top = min(y_open, y_close)
+        body_height = max(abs(y_open - y_close), 1.2)
+
+        candle_elements.append(
+            f'<line x1="{x:.2f}" y1="{y_high:.2f}" x2="{x:.2f}" y2="{y_low:.2f}" stroke="{color}" stroke-width="1.8" />'
+        )
+        candle_elements.append(
+            f'<rect x="{x - half_w:.2f}" y="{body_top:.2f}" width="{candle_width:.2f}" height="{body_height:.2f}" fill="{color}" stroke="{color}" stroke-width="1.2" rx="0.8" />'
+        )
+
     zigzag_points = []
     for idx in pivot_idx:
         pivot_price = float(high[idx] if pivots[idx] == PEAK else low[idx])
         zigzag_points.append((x_at(int(idx)), y_at(pivot_price)))
 
-    title = f"{signal_name.upper()} N Pattern"
+    display_name = str(stock_name_zh).strip()
+    title = f"{stock_code} {display_name}" if display_name else str(stock_code)
     subtitle = f"window={len(data)} threshold={threshold:.4f} pivots={len(pivot_idx)}"
     if not data.empty:
         subtitle = f"{data['trade_date'].iloc[0].strftime('%Y-%m-%d')} ~ {data['trade_date'].iloc[-1].strftime('%Y-%m-%d')} | {subtitle}"
@@ -282,8 +346,6 @@ def _render_n_svg(window_df: pd.DataFrame, signal_name: str, threshold: float, o
             f'<circle cx="{x_at(int(idx)):.2f}" cy="{y_at(pivot_price):.2f}" r="5" fill="#fbbf24" stroke="#1f2937" stroke-width="2" />'
         )
 
-    badge_fill = "#1d4ed8" if signal_name == "positive_n" else "#b91c1c"
-    badge_text = "Positive N" if signal_name == "positive_n" else "Reverse N"
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         "<title id='title'>" + escape(title) + "</title>",
@@ -291,25 +353,22 @@ def _render_n_svg(window_df: pd.DataFrame, signal_name: str, threshold: float, o
         "<style>",
         "  .bg{fill:#081120} .panel{fill:#0f172a;stroke:#243244;stroke-width:2} .grid{stroke:#243244;stroke-width:1;opacity:.55}",
         "  .title{font:700 34px Arial,Helvetica,sans-serif;fill:#f8fafc} .sub{font:400 18px Arial,Helvetica,sans-serif;fill:#94a3b8}",
-        "  .axis{font:400 16px Arial,Helvetica,sans-serif;fill:#94a3b8} .close{fill:none;stroke:#60a5fa;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}",
+        "  .axis{font:400 16px Arial,Helvetica,sans-serif;fill:#94a3b8}",
         "  .zigzag{fill:none;stroke:#f8fafc;stroke-width:4;stroke-linejoin:round;stroke-linecap:round}",
         "</style>",
         '<rect class="bg" x="0" y="0" width="100%" height="100%" />',
         f'<rect class="panel" x="40" y="40" width="{width - 80}" height="{height - 80}" rx="20" />',
         f'<text x="80" y="95" class="title">{escape(title)}</text>',
         f'<text x="80" y="130" class="sub">{escape(subtitle)}</text>',
-        f'<rect x="{width - 300}" y="70" width="220" height="44" rx="22" fill="{badge_fill}" opacity="0.95" />',
-        f'<text x="{width - 190}" y="100" text-anchor="middle" class="axis" fill="#ffffff">{badge_text}</text>',
         *grid_lines,
+        *candle_elements,
     ]
-    if close_points:
-        lines.append(f'<polyline class="close" points="{_svg_points(close_points)}" />')
     if len(zigzag_points) >= 2:
         lines.append(f'<polyline class="zigzag" points="{_svg_points(zigzag_points)}" />')
     lines.extend(pivot_marks)
-    if close_points:
+    if np.isfinite(close[-1]) and np.isfinite(high[-1]) and np.isfinite(low[-1]) and np.isfinite(open_[-1]):
         lines.append(
-            f'<text x="80" y="{height - 55}" class="axis">close={close[-1]:.2f} high={high[-1]:.2f} low={low[-1]:.2f}</text>'
+            f'<text x="80" y="{height - 55}" class="axis">open={open_[-1]:.2f} close={close[-1]:.2f} high={high[-1]:.2f} low={low[-1]:.2f}</text>'
         )
     lines.append("</svg>")
 
@@ -322,9 +381,17 @@ def build_n_pattern_outputs(
     window: int = DEFAULT_N_WINDOW,
     threshold: float = DEFAULT_N_THRESHOLD,
     output_dir: Path = N_PATTERN_OUTPUT_DIR,
+    fast_reverse_today: bool = False,
+    fast_reverse_days: int = 3,
 ) -> pd.DataFrame:
     """计算日频 N 型信号并落盘全量日表、事件表、索引和 SVG。"""
-    print("\n[4] 计算 N 型指标并输出...")
+    fast_reverse_days = max(1, int(fast_reverse_days))
+    if fast_reverse_today:
+        print(
+            f"\n[4-fast] 极速模式：仅输出最近 {fast_reverse_days} 个交易日内相对前一日发生方向切换的 N 型信号（正N<->反N）..."
+        )
+    else:
+        print("\n[4] 计算 N 型指标并输出...")
 
     required = {"ts_code", "trade_date", "open", "high", "low", "close", "vol"}
     missing = required - set(merged_df.columns)
@@ -337,23 +404,45 @@ def build_n_pattern_outputs(
         base[col] = pd.to_numeric(base[col], errors="coerce")
     base = base.dropna(subset=["ts_code", "trade_date", "open", "high", "low", "close", "vol"]).copy()
     base = base.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+    latest_trade_ts = base["trade_date"].max() if not base.empty else None
+    latest_trade_date = latest_trade_ts.strftime("%Y-%m-%d") if pd.notna(latest_trade_ts) else None
+    recent_trade_dates = pd.DatetimeIndex([])
+    recent_trade_dates_set: set[pd.Timestamp] = set()
+    if fast_reverse_today and not base.empty:
+        unique_trade_dates = pd.DatetimeIndex(sorted(base["trade_date"].dropna().unique()))
+        recent_trade_dates = unique_trade_dates[-fast_reverse_days:]
+        recent_trade_dates_set = set(recent_trade_dates.to_pydatetime())
 
     daily_rows: list[dict[str, object]] = []
     event_rows: list[dict[str, object]] = []
     daily_index: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"positive_n": [], "reverse_n": []})
 
     groups = [(code, sub) for code, sub in base.groupby("ts_code", sort=False)]
+    stock_name_map = _load_stock_name_map_from_akshare()
     print(f"    共 {len(groups)} 只股票，window={window} threshold={threshold:.4f}")
 
     for stock_code, sub_df in groups:
-        stock_df = sub_df.sort_values("trade_date").reset_index(drop=True)
+        stock_df = (
+            sub_df.sort_values("trade_date")
+            .drop_duplicates(subset=["trade_date"], keep="last")
+            .reset_index(drop=True)
+        )
         if len(stock_df) < window:
             continue
 
         valid_mask = rolling_window_valid_mask(stock_df["low"].to_numpy(dtype=float), stock_df["high"].to_numpy(dtype=float), window)
         instrument = to_prefixed_instrument(stock_code)
+        stock_name_zh = stock_name_map.get(stock_code, "")
 
-        for idx in range(window - 1, len(stock_df)):
+        if fast_reverse_today:
+            idx_candidates = range(window - 1, len(stock_df))
+        else:
+            idx_candidates = range(window - 1, len(stock_df))
+
+        prev_effective_state = 0
+        prev_effective_trade_date = ""
+
+        for idx in idx_candidates:
             if not valid_mask[idx]:
                 continue
 
@@ -364,14 +453,42 @@ def build_n_pattern_outputs(
 
             trade_date = window_df["trade_date"].iloc[-1]
             trade_date_str = trade_date.strftime("%Y-%m-%d")
-            signal_name = "positive_n" if signal == 1 else "reverse_n" if signal == -1 else "none"
-            is_reversal = signal == -1
+
+            current_effective_state = signal if signal != 0 else prev_effective_state
+            effective_signal_name = (
+                "positive_n" if current_effective_state == 1 else "reverse_n" if current_effective_state == -1 else "none"
+            )
+            transition_name = _n_transition_name(prev_effective_state, current_effective_state)
             svg_path = ""
 
-            if signal != 0:
+            if fast_reverse_today:
+                if trade_date.to_pydatetime() not in recent_trade_dates_set or transition_name == "none":
+                    prev_effective_state = current_effective_state
+                    prev_effective_trade_date = trade_date_str
+                    continue
+
                 svg_dir = output_dir / "svg" / trade_date_str
-                svg_path_obj = svg_dir / f"{instrument}_{signal_name}.svg"
-                _render_n_svg(window_df, signal_name, threshold, svg_path_obj)
+                svg_path_obj = svg_dir / f"{instrument}_{transition_name}_{effective_signal_name}.svg"
+                _render_n_svg(
+                    window_df,
+                    effective_signal_name,
+                    threshold,
+                    svg_path_obj,
+                    stock_code=stock_code,
+                    stock_name_zh=stock_name_zh,
+                )
+                svg_path = str(svg_path_obj.relative_to(output_dir))
+            elif signal != 0:
+                svg_dir = output_dir / "svg" / trade_date_str
+                svg_path_obj = svg_dir / f"{instrument}_{effective_signal_name}.svg"
+                _render_n_svg(
+                    window_df,
+                    effective_signal_name,
+                    threshold,
+                    svg_path_obj,
+                    stock_code=stock_code,
+                    stock_name_zh=stock_name_zh,
+                )
                 svg_path = str(svg_path_obj.relative_to(output_dir))
 
             row = {
@@ -384,9 +501,13 @@ def build_n_pattern_outputs(
                 "low": float(window_df["low"].iloc[-1]),
                 "close": float(window_df["close"].iloc[-1]),
                 "vol": float(window_df["vol"].iloc[-1]),
-                "n_signal": int(signal),
-                "n_signal_name": signal_name,
-                "n_is_reversal": bool(is_reversal),
+                "n_signal": int(current_effective_state if fast_reverse_today else signal),
+                "n_signal_name": effective_signal_name if fast_reverse_today else ("positive_n" if signal == 1 else "reverse_n" if signal == -1 else "none"),
+                "n_is_reversal": bool((current_effective_state if fast_reverse_today else signal) == -1),
+                "n_prev_signal": int(prev_effective_state),
+                "n_prev_signal_name": "positive_n" if prev_effective_state == 1 else "reverse_n" if prev_effective_state == -1 else "none",
+                "n_prev_trade_date": prev_effective_trade_date,
+                "n_transition": transition_name,
                 "n_pivot_count": int(pivot_count),
                 "n_window": int(window),
                 "n_threshold": float(threshold),
@@ -396,9 +517,66 @@ def build_n_pattern_outputs(
             }
             daily_rows.append(row)
 
-            if signal != 0:
+            if fast_reverse_today:
                 event_rows.append(row.copy())
-                daily_index[trade_date_str][signal_name].append(instrument)
+                daily_index[trade_date_str][effective_signal_name].append(instrument)
+            elif signal != 0:
+                event_rows.append(row.copy())
+                daily_index[trade_date_str][effective_signal_name].append(instrument)
+
+            prev_effective_state = current_effective_state
+            prev_effective_trade_date = trade_date_str
+
+    if fast_reverse_today:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        reverse_today_df = pd.DataFrame(event_rows)
+        reverse_today_path = output_dir / "n_transition_recent.csv"
+        reverse_today_legacy_path = output_dir / "n_reverse_today.csv"
+        summary_path = output_dir / "n_transition_recent_summary.json"
+        summary_legacy_path = output_dir / "n_reverse_today_summary.json"
+
+        reverse_today_df.to_csv(reverse_today_path, index=False)
+        reverse_today_df.to_csv(reverse_today_legacy_path, index=False)
+        positive_to_reverse_count = 0
+        reverse_to_positive_count = 0
+        svg_rows = 0
+        if not reverse_today_df.empty:
+            positive_to_reverse_count = int((reverse_today_df["n_transition"] == "positive_to_reverse").sum())
+            reverse_to_positive_count = int((reverse_today_df["n_transition"] == "reverse_to_positive").sum())
+            svg_rows = int(reverse_today_df["n_svg_path"].astype(str).ne("").sum())
+        summary = {
+            "generated_at": datetime.now(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": "fast_reverse_today",
+            "fast_reverse_days": int(fast_reverse_days),
+            "trade_date": latest_trade_date,
+            "recent_trade_dates": [ts.strftime("%Y-%m-%d") for ts in recent_trade_dates],
+            "rows": int(len(reverse_today_df)),
+            "positive_to_reverse_rows": positive_to_reverse_count,
+            "reverse_to_positive_rows": reverse_to_positive_count,
+            "svg_rows": svg_rows,
+            "window": int(window),
+            "threshold": float(threshold),
+            "output_files": {
+                "transition_today": str(reverse_today_path),
+                "reverse_today_legacy": str(reverse_today_legacy_path),
+                "summary": str(summary_path),
+                "summary_legacy": str(summary_legacy_path),
+                "svg_dir": str(output_dir / "svg"),
+            },
+            "signal_convention": {
+                "n_transition": ["positive_to_reverse", "reverse_to_positive"],
+                "n_prev_trade_date": "previous trade day",
+                "n_prev_signal": "previous trade-day N signal",
+                "n_signal": "latest trade-day N signal",
+            },
+        }
+        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary_legacy_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"    极速翻转表: {reverse_today_path} (rows={len(reverse_today_df)})")
+        print(f"    极速翻转表(兼容): {reverse_today_legacy_path} (rows={len(reverse_today_df)})")
+        print(f"    极速摘要: {summary_path}")
+        print(f"    极速摘要(兼容): {summary_legacy_path}")
+        return reverse_today_df
 
     for signals in daily_index.values():
         signals["positive_n"].sort()
@@ -1256,6 +1434,8 @@ def run_once(
     n_window: int = DEFAULT_N_WINDOW,
     n_threshold: float = DEFAULT_N_THRESHOLD,
     output_dir: Path = N_PATTERN_OUTPUT_DIR,
+    fast_reverse_today: bool = False,
+    fast_reverse_days: int = 3,
 ) -> pd.DataFrame:
     print("=" * 60)
     print("市场最新 100 日数据 + N 型指标")
@@ -1267,7 +1447,14 @@ def run_once(
     merged_df = maybe_filter_index_constituents(merged_df, market=market)
     merged_df = apply_forward_adjustment(merged_df)
 
-    build_n_pattern_outputs(merged_df, window=n_window, threshold=n_threshold, output_dir=output_dir)
+    build_n_pattern_outputs(
+        merged_df,
+        window=n_window,
+        threshold=n_threshold,
+        output_dir=output_dir,
+        fast_reverse_today=fast_reverse_today,
+        fast_reverse_days=fast_reverse_days,
+    )
     return merged_df
 
 
@@ -1277,6 +1464,8 @@ def run_daemon(
     n_threshold: float = DEFAULT_N_THRESHOLD,
     interval_minutes: int = DEFAULT_DAEMON_INTERVAL_MINUTES,
     output_dir: Path = N_PATTERN_OUTPUT_DIR,
+    fast_reverse_today: bool = False,
+    fast_reverse_days: int = 3,
 ) -> None:
     print(f"[daemon] 启动常驻任务，交易时段每 {interval_minutes} 分钟刷新一次")
     if not TUSHARE_TOKEN:
@@ -1306,7 +1495,14 @@ def run_daemon(
             continue
 
         try:
-            run_once(market=market, n_window=n_window, n_threshold=n_threshold, output_dir=output_dir)
+            run_once(
+                market=market,
+                n_window=n_window,
+                n_threshold=n_threshold,
+                output_dir=output_dir,
+                fast_reverse_today=fast_reverse_today,
+                fast_reverse_days=fast_reverse_days,
+            )
         except Exception:
             LOGGER.exception("daemon 运行失败")
 
@@ -1322,6 +1518,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-window", type=int, default=DEFAULT_N_WINDOW, help="Trailing bars used for N-pattern detection")
     parser.add_argument("--n-threshold", type=float, default=DEFAULT_N_THRESHOLD, help="ZigZag threshold for N-pattern detection")
     parser.add_argument("--n-output-dir", default=str(N_PATTERN_OUTPUT_DIR), help="Directory for N-pattern outputs")
+    parser.add_argument("--fast-reverse-today", action="store_true", help="Fast mode: only output latest trade-day N-signal flips (positive<->reverse)")
+    parser.add_argument("--fast-reverse-days", type=int, default=3, help="Fast mode lookback trading days for transition scan")
     parser.add_argument("--daemon", action="store_true", help="Keep running and refresh during trading sessions")
     parser.add_argument("--interval-minutes", type=int, default=DEFAULT_DAEMON_INTERVAL_MINUTES, help="Refresh interval in daemon mode")
     return parser.parse_args()
@@ -1339,6 +1537,8 @@ if __name__ == "__main__":
                 n_threshold=args.n_threshold,
                 interval_minutes=args.interval_minutes,
                 output_dir=output_dir,
+                fast_reverse_today=args.fast_reverse_today,
+                fast_reverse_days=args.fast_reverse_days,
             )
         else:
             run_once(
@@ -1346,6 +1546,8 @@ if __name__ == "__main__":
                 n_window=args.n_window,
                 n_threshold=args.n_threshold,
                 output_dir=output_dir,
+                fast_reverse_today=args.fast_reverse_today,
+                fast_reverse_days=args.fast_reverse_days,
             )
     except Exception:
         LOGGER.exception("脚本执行失败")
