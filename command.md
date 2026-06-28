@@ -1,0 +1,1 @@
+scp -r ./data root@8.130.87.199:/data/NStrategy/

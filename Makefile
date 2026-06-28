@@ -21,7 +21,7 @@ WEB_PORT ?= 5173
 
 EXT_SUFFIX := $(shell $(PYTHON) -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 
-.PHONY: help build-zigzag thiszigzag backtest zigzag-charts zigzag-signals n-pattern-api n-pattern-web n-pattern-compose prod-deploy prod-restart prod-status prod-logs prod-down prod-health run_zigzag_data clean-zigzag clean-outputs
+.PHONY: help build-zigzag thiszigzag backtest zigzag-charts zigzag-signals install-docker-aliyun n-pattern-api n-pattern-web n-pattern-compose prod-deploy prod-restart prod-status prod-logs prod-down prod-health run_zigzag_data clean-zigzag clean-outputs
 
 help:
 	@echo "Targets:"
@@ -32,6 +32,7 @@ help:
 	@echo "  make n-pattern-api Run the FastAPI N-pattern browser backend"
 	@echo "  make n-pattern-web Run the Vue N-pattern browser frontend"
 	@echo "  make n-pattern-compose Run refresh daemon, API, and web containers"
+	@echo "  make install-docker-aliyun Install Docker on Linux using Aliyun Docker CE repo"
 	@echo "  make prod-deploy   Build and start production Docker services"
 	@echo "  make prod-restart  Rebuild and restart production Docker services"
 	@echo "  make prod-status   Show production service status"
@@ -106,6 +107,9 @@ n-pattern-web:
 
 n-pattern-compose:
 	docker compose up -d --build n-pattern-service n-pattern-api n-pattern-web
+
+install-docker-aliyun:
+	sudo ./scripts/install_docker_aliyun.sh
 
 prod-deploy:
 	./scripts/deploy_prod.sh up

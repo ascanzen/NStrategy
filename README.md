@@ -274,10 +274,38 @@ Production deployment:
 cp .env.example .env
 # edit .env:
 #   TUSHARE_TOKEN=...
+#   PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+#   PIP_TRUSTED_HOST=mirrors.aliyun.com
+#   NPM_REGISTRY=https://registry.npmmirror.com
 #   API_BIND=127.0.0.1
 #   WEB_HTTP_PORT=8080
 #   API_PORT=8000
 make prod-deploy
+```
+
+Install Docker on a Linux server with the Aliyun Docker CE repository:
+
+```bash
+sudo bash scripts/install_docker_aliyun.sh
+```
+
+Or through Make:
+
+```bash
+make install-docker-aliyun
+```
+
+The Docker installer supports Debian/Ubuntu and common RHEL-compatible systems such as CentOS, Rocky, AlmaLinux, Alibaba Cloud Linux, and Anolis. To use an Aliyun Docker Hub accelerator, set `ALIYUN_DOCKER_MIRROR` before running the installer:
+
+```bash
+sudo ALIYUN_DOCKER_MIRROR=https://your-id.mirror.aliyuncs.com bash scripts/install_docker_aliyun.sh
+```
+
+Docker builds use Aliyun PyPI by default for Python dependencies:
+
+```bash
+PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+PIP_TRUSTED_HOST=mirrors.aliyun.com
 ```
 
 Production operations:
