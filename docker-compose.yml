@@ -20,6 +20,9 @@ services:
       - --daemon
       - --market
       - all
+      - --fast-reverse-today 
+      - --fast-reverse-days
+      - "3"
       - --interval-minutes
       - "15"
 
