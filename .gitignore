@@ -8,6 +8,7 @@ __pycache__/
 venv/
 env/
 .env
+node_modules/
 
 build/
 dist/
@@ -27,3 +28,4 @@ dist/
 !/outputs/zigzag_csi300_nav.svg
 
 /data/*
+/logs/*

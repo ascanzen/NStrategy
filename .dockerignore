@@ -3,9 +3,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.env
 build/
 temp/
 dist/
+frontend/dist/
+frontend/node_modules/
 logs/
 outputs/
 data/cache/

@@ -19,3 +19,29 @@ services:
       - all
       - --interval-minutes
       - "15"
+
+  n-pattern-api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: seawealthy-n-pattern-api
+    restart: unless-stopped
+    environment:
+      N_PATTERN_DIR: ${N_PATTERN_DIR:-/app/outputs/n_pattern}
+      STOCK_ALIAS_FILE: ${STOCK_ALIAS_FILE:-/app/data/stock_aliases.csv}
+    volumes:
+      - ./outputs:/app/outputs:ro
+      - ./data:/app/data:ro
+    ports:
+      - "8000:8000"
+
+  n-pattern-web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: seawealthy-n-pattern-web
+    restart: unless-stopped
+    depends_on:
+      - n-pattern-api
+    ports:
+      - "8080:80"

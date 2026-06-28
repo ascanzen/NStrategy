@@ -2,3 +2,6 @@ pandas>=2.2
 numpy>=1.26
 akshare>=1.14
 tushare>=1.4
+fastapi>=0.116
+uvicorn[standard]>=0.35
+openpyxl>=3.1

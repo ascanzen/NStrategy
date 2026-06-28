@@ -235,3 +235,60 @@ docker compose up -d --build
 ```
 
 The service runs only during Shanghai trading sessions and refreshes every 15 minutes. Logs are written to `logs/cross_section_service.log` and also streamed to the container console.
+
+## N Pattern Browser
+
+The repository includes a FastAPI + Vue browser for `outputs/n_pattern/`.
+
+Local backend:
+
+```bash
+pip install -r requirements.txt
+make n-pattern-api
+```
+
+Local frontend:
+
+```bash
+cd frontend
+npm install
+cd ..
+make n-pattern-web
+```
+
+Open `http://localhost:5173`.
+
+Container deployment:
+
+```bash
+cp .env.example .env
+# edit .env and set TUSHARE_TOKEN
+make n-pattern-compose
+```
+
+Open `http://localhost:8080`. API is also exposed at `http://localhost:8000`.
+
+Browser features:
+
+- Recent 3-day or 10-day N-pattern switch list.
+- Date and switch-type filters: `positive_to_reverse`, `reverse_to_positive`.
+- Stock search by code. Pinyin search is supported when an alias file is available.
+- SVG chart preview from `outputs/n_pattern/svg/`.
+- XLSX export with the same filters as the current view.
+
+Optional pinyin alias file:
+
+```csv
+ts_code,instrument,name,pinyin,abbr
+000001.SZ,SZ000001,平安银行,ping an yin hang,payh
+```
+
+Save it as `data/stock_aliases.csv`, or set `STOCK_ALIAS_FILE=/path/to/stock_aliases.csv` for the API service.
+
+Useful API paths:
+
+- `GET /api/health`
+- `GET /api/summary`
+- `GET /api/transitions?days=3&transition=all&q=000001`
+- `GET /api/export.xlsx?days=10&transition=positive_to_reverse`
+- `GET /api/svg/<relative-svg-path>`
