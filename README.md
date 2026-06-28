@@ -268,6 +268,30 @@ make n-pattern-compose
 
 Open `http://localhost:8080`. API is also exposed at `http://localhost:8000`.
 
+Production deployment:
+
+```bash
+cp .env.example .env
+# edit .env:
+#   TUSHARE_TOKEN=...
+#   API_BIND=127.0.0.1
+#   WEB_HTTP_PORT=8080
+#   API_PORT=8000
+make prod-deploy
+```
+
+Production operations:
+
+```bash
+make prod-status
+make prod-health
+make prod-logs
+make prod-restart
+make prod-down
+```
+
+The production deploy script is `scripts/deploy_prod.sh`. It checks Docker, validates `.env`, creates `data/`, `outputs/`, and `logs/`, builds the containers, starts the refresh daemon + API + web services, then checks `http://127.0.0.1:${API_PORT}/api/health`.
+
 Browser features:
 
 - Recent 3-day or 10-day N-pattern switch list.

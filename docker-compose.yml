@@ -33,7 +33,12 @@ services:
       - ./outputs:/app/outputs:ro
       - ./data:/app/data:ro
     ports:
-      - "8000:8000"
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   n-pattern-web:
     build:
@@ -44,4 +49,9 @@ services:
     depends_on:
       - n-pattern-api
     ports:
-      - "8080:80"
+      - "${WEB_BIND:-0.0.0.0}:${WEB_HTTP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
