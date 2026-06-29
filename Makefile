@@ -100,7 +100,7 @@ run_zigzag_data:
 	$(PYTHON) get_most_cross_section_data.py --market all --fast-reverse-today --fast-reverse-days 3
 
 n-pattern-api:
-	N_PATTERN_DIR="$(CURDIR)/outputs/n_pattern" uvicorn backend.app:app --host "$(API_HOST)" --port "$(API_PORT)" --reload
+	TZ=Asia/Shanghai N_PATTERN_DIR="$(CURDIR)/outputs/n_pattern" uvicorn backend.app:app --host "$(API_HOST)" --port "$(API_PORT)" --reload
 
 n-pattern-web:
 	cd frontend && npm run dev -- --host 0.0.0.0 --port "$(WEB_PORT)"

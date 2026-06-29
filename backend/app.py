@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
@@ -29,6 +30,7 @@ ALIAS_FILES = [
 ]
 
 app = FastAPI(title="N Pattern Browser", version="1.0.0")
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,6 +73,10 @@ def _safe_text(value: Any) -> str:
     if pd.isna(value):
         return ""
     return str(value)
+
+
+def _now_shanghai() -> datetime:
+    return datetime.now(SHANGHAI_TZ)
 
 
 def _to_pinyin(value: Any) -> str:
@@ -249,7 +255,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "n_pattern_dir": str(N_PATTERN_DIR),
         "transition_file_exists": TRANSITION_FILE.exists(),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": _now_shanghai().isoformat(timespec="seconds"),
     }
 
 
@@ -352,7 +358,7 @@ def export_xlsx(
     output = BytesIO()
     wb.save(output)
     output.seek(0)
-    filename = f"n_pattern_transitions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"n_pattern_transitions_{_now_shanghai().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

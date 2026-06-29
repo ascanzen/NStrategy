@@ -10,6 +10,7 @@ services:
     restart: unless-stopped
     environment:
       TUSHARE_TOKEN: ${TUSHARE_TOKEN}
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./data:/app/data
       - ./outputs:/app/outputs
@@ -38,6 +39,7 @@ services:
     environment:
       N_PATTERN_DIR: ${N_PATTERN_DIR:-/app/outputs/n_pattern}
       STOCK_ALIAS_FILE: ${STOCK_ALIAS_FILE:-/app/data/stock_aliases.csv}
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./outputs:/app/outputs:ro
       - ./data:/app/data:ro
@@ -57,6 +59,8 @@ services:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     container_name: seawealthy-n-pattern-web
     restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     depends_on:
       - n-pattern-api
     ports:
