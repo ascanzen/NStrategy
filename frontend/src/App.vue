@@ -79,7 +79,7 @@
                 v-for="item in items"
                 :key="`${item.trade_date}-${item.ts_code}-${item.n_transition}`"
                 :class="{ selected: selectedKey(item) === selectedKey(selected) }"
-                @click="selected = item"
+                @click="selectItem(item)"
               >
                 <td>{{ item.trade_date }}</td>
                 <td>
@@ -120,16 +120,32 @@
           <a v-if="selected?.svg_url" :href="selected.svg_url" target="_blank" rel="noreferrer">打开</a>
         </div>
         <div class="svg-frame">
-          <img v-if="selected?.svg_url" :src="selected.svg_url" :alt="selected.display_name" />
+          <img
+            v-if="selected?.svg_url"
+            :src="selected.svg_url"
+            :alt="selected.display_name"
+            class="zoomable-svg"
+            @click="openImageZoom"
+          />
           <div v-else class="empty preview-empty">未选择图形</div>
         </div>
       </aside>
     </section>
+
+    <div v-if="imageZoomOpen && selected?.svg_url" class="lightbox" @click="closeImageZoom">
+      <button class="lightbox-close" type="button" @click.stop="closeImageZoom">关闭</button>
+      <img
+        :src="selected.svg_url"
+        :alt="selected.display_name"
+        class="lightbox-image"
+        @click.stop
+      />
+    </div>
   </main>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 const apiBase = import.meta.env.VITE_API_BASE || "";
 const filters = reactive({
@@ -144,6 +160,7 @@ const total = ref(0);
 const selected = ref(null);
 const loading = ref(false);
 const exporting = ref(false);
+const imageZoomOpen = ref(false);
 let searchTimer = 0;
 
 const availableDates = computed(() => summary.value.available_dates || []);
@@ -181,9 +198,13 @@ async function loadTransitions() {
   try {
     const response = await fetch(`${apiBase}/api/transitions?${buildParams()}`);
     const payload = await response.json();
+    const prevSelectedKey = selectedKey(selected.value);
     items.value = payload.items || [];
     total.value = payload.total || 0;
-    selected.value = items.value[0] || null;
+    selected.value = items.value.find((item) => selectedKey(item) === prevSelectedKey) || items.value[0] || null;
+    if (!selected.value) {
+      imageZoomOpen.value = false;
+    }
   } finally {
     loading.value = false;
   }
@@ -198,6 +219,57 @@ function setDays(days) {
   filters.days = days;
   filters.trade_date = "";
   loadTransitions();
+}
+
+function selectItem(item) {
+  selected.value = item;
+}
+
+function moveSelection(step) {
+  if (!items.value.length) return;
+  const currentKey = selectedKey(selected.value);
+  const currentIndex = items.value.findIndex((item) => selectedKey(item) === currentKey);
+  if (currentIndex < 0) {
+    selected.value = items.value[0];
+    return;
+  }
+  const nextIndex = Math.max(0, Math.min(items.value.length - 1, currentIndex + step));
+  selected.value = items.value[nextIndex];
+}
+
+function isTypingTarget(target) {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+function onGlobalKeydown(event) {
+  if (isTypingTarget(event.target)) return;
+
+  if (event.key === "Escape" && imageZoomOpen.value) {
+    imageZoomOpen.value = false;
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveSelection(-1);
+    return;
+  }
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveSelection(1);
+  }
+}
+
+function openImageZoom() {
+  if (!selected.value?.svg_url) return;
+  imageZoomOpen.value = true;
+}
+
+function closeImageZoom() {
+  imageZoomOpen.value = false;
 }
 
 async function exportXlsx() {
@@ -253,7 +325,12 @@ function formatCompact(value) {
 }
 
 onMounted(async () => {
+  window.addEventListener("keydown", onGlobalKeydown);
   await loadSummary();
   await loadTransitions();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onGlobalKeydown);
 });
 </script>

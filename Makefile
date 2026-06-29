@@ -21,7 +21,7 @@ WEB_PORT ?= 5173
 
 EXT_SUFFIX := $(shell $(PYTHON) -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
 
-.PHONY: help build-zigzag thiszigzag backtest zigzag-charts zigzag-signals install-docker-aliyun n-pattern-api n-pattern-web n-pattern-compose prod-deploy prod-restart prod-status prod-logs prod-down prod-health run_zigzag_data clean-zigzag clean-outputs
+.PHONY: help build-zigzag thiszigzag backtest zigzag-charts zigzag-signals install-docker-aliyun n-pattern-api n-pattern-web n-pattern-compose prod-deploy prod-restart prod-status prod-logs prod-down prod-health deploy run_zigzag_data clean-zigzag clean-outputs
 
 help:
 	@echo "Targets:"
@@ -39,6 +39,7 @@ help:
 	@echo "  make prod-logs     Follow production service logs"
 	@echo "  make prod-health   Check production API health"
 	@echo "  make prod-down     Stop production Docker services"
+	@echo "  make deploy        Commit + push local changes, then pull and restart on production host"
 	@echo ""
 	@echo "Options:"
 	@echo "  PYTHON=$(PYTHON)"
@@ -128,3 +129,9 @@ prod-down:
 
 prod-health:
 	./scripts/deploy_prod.sh health
+
+deploy:
+	git add -A
+	git diff --cached --quiet || git commit -m "$${MSG:-chore: deploy}"
+	git push
+	ssh root@8.130.87.199 'cd /data/NStrategy && git pull && make prod-restart'

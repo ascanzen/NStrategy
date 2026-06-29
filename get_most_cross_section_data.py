@@ -69,6 +69,7 @@ DEFAULT_N_WINDOW = 60
 DEFAULT_N_THRESHOLD = 0.001
 DEFAULT_DAEMON_INTERVAL_MINUTES = 15
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+TUSHARE_LOCAL_CACHE_TTL_HOURS = 8
 
 # Tushare token（仅通过环境变量传入）
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
@@ -781,43 +782,62 @@ def fetch_tushare_daily():
     """
     import tushare as ts
 
-    if TUSHARE_CSV.exists():
-        print(f"[1] 读取本地 Tushare 数据: {TUSHARE_CSV}")
+    if TUSHARE_CSV.exists() :
         local_df = pd.read_csv(TUSHARE_CSV)
-        # 兼容旧缓存：若缺少 adj_factor，则补拉后覆盖本地缓存。
-        if "adj_factor" in local_df.columns:
-            return local_df
-        print("    [提示] 本地缓存缺少 adj_factor，尝试补齐复权因子...")
-        if not TUSHARE_TOKEN:
-            print("    [警告] 未设置 TUSHARE_TOKEN，无法补齐 adj_factor，将返回原始数据")
-            return local_df
-
-        ts.set_token(TUSHARE_TOKEN)
-        pro = ts.pro_api()
-        backfill = local_df.copy()
-        if "trade_date" not in backfill.columns:
-            raise ValueError("本地 Tushare 数据缺少 trade_date，无法补齐 adj_factor")
-
-        trade_date_dt = pd.to_datetime(backfill["trade_date"], errors="coerce")
-        if trade_date_dt.isna().all():
-            raise ValueError("本地 Tushare trade_date 无法解析，无法补齐 adj_factor")
-
-        backfill_dates = sorted(trade_date_dt.dropna().dt.strftime("%Y%m%d").unique().tolist())
-        adj_df = _fetch_tushare_adj_factor_for_dates(pro, backfill_dates)
-        if not adj_df.empty:
-            backfill["ts_code"] = backfill["ts_code"].map(normalize_ts_code)
-            adj_df["ts_code"] = adj_df["ts_code"].map(normalize_ts_code)
-            backfill["trade_date_str"] = trade_date_dt.dt.strftime("%Y%m%d")
-            adj_df["trade_date_str"] = adj_df["trade_date"].astype(str)
-            backfill = backfill.merge(
-                adj_df[["ts_code", "trade_date_str", "adj_factor"]],
-                on=["ts_code", "trade_date_str"],
-                how="left",
+        cache_age = datetime.now() - datetime.fromtimestamp(TUSHARE_CSV.stat().st_mtime)
+        cache_expired = cache_age > timedelta(hours=TUSHARE_LOCAL_CACHE_TTL_HOURS)
+        if not cache_expired:
+            print(
+                f"[1] 读取本地 Tushare 数据: {TUSHARE_CSV} "
+                f"(缓存时长 {cache_age.total_seconds() / 3600:.2f} 小时)"
             )
-            backfill = backfill.drop(columns=["trade_date_str"])
-            backfill.to_csv(TUSHARE_CSV, index=False)
-            print(f"    已补齐并覆盖保存: {TUSHARE_CSV}")
-        return backfill
+        else:
+            print(
+                f"[1] 本地 Tushare 缓存已过期: {TUSHARE_CSV} "
+                f"(缓存时长 {cache_age.total_seconds() / 3600:.2f} 小时 > {TUSHARE_LOCAL_CACHE_TTL_HOURS} 小时)"
+            )
+
+        if cache_expired and not TUSHARE_TOKEN:
+            print("    [警告] 缓存已过期且未设置 TUSHARE_TOKEN，无法刷新，将返回本地缓存")
+            return local_df
+
+        if cache_expired and TUSHARE_TOKEN:
+            print("    [提示] 缓存已过期，开始刷新最近交易日数据...")
+        else:
+        # 兼容旧缓存：若缺少 adj_factor，则补拉后覆盖本地缓存。
+            if "adj_factor" in local_df.columns:
+                return local_df
+            print("    [提示] 本地缓存缺少 adj_factor，尝试补齐复权因子...")
+            if not TUSHARE_TOKEN:
+                print("    [警告] 未设置 TUSHARE_TOKEN，无法补齐 adj_factor，将返回原始数据")
+                return local_df
+
+            ts.set_token(TUSHARE_TOKEN)
+            pro = ts.pro_api()
+            backfill = local_df.copy()
+            if "trade_date" not in backfill.columns:
+                raise ValueError("本地 Tushare 数据缺少 trade_date，无法补齐 adj_factor")
+
+            trade_date_dt = pd.to_datetime(backfill["trade_date"], errors="coerce")
+            if trade_date_dt.isna().all():
+                raise ValueError("本地 Tushare trade_date 无法解析，无法补齐 adj_factor")
+
+            backfill_dates = sorted(trade_date_dt.dropna().dt.strftime("%Y%m%d").unique().tolist())
+            adj_df = _fetch_tushare_adj_factor_for_dates(pro, backfill_dates)
+            if not adj_df.empty:
+                backfill["ts_code"] = backfill["ts_code"].map(normalize_ts_code)
+                adj_df["ts_code"] = adj_df["ts_code"].map(normalize_ts_code)
+                backfill["trade_date_str"] = trade_date_dt.dt.strftime("%Y%m%d")
+                adj_df["trade_date_str"] = adj_df["trade_date"].astype(str)
+                backfill = backfill.merge(
+                    adj_df[["ts_code", "trade_date_str", "adj_factor"]],
+                    on=["ts_code", "trade_date_str"],
+                    how="left",
+                )
+                backfill = backfill.drop(columns=["trade_date_str"])
+                backfill.to_csv(TUSHARE_CSV, index=False)
+                print(f"    已补齐并覆盖保存: {TUSHARE_CSV}")
+            return backfill
 
     if not TUSHARE_TOKEN:
         raise ValueError(

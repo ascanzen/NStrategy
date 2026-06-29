@@ -322,6 +322,42 @@ td small {
   background: #ffffff;
 }
 
+.zoomable-svg {
+  cursor: zoom-in;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(3, 10, 24, 0.78);
+}
+
+.lightbox-image {
+  width: min(1400px, 96vw);
+  max-height: 92vh;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 10px;
+  object-fit: contain;
+  background: #ffffff;
+  box-shadow: 0 20px 70px rgba(2, 6, 23, 0.45);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 14px;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
 .preview-empty {
   display: grid;
   place-items: center;
